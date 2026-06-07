@@ -1,0 +1,6 @@
+/* lofiplus.tcss — minimal placeholder. All theming is inline in widgets. */
+
+Screen {
+    background: #0d1117;
+    color: #cdd9e5;
+}

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lofiplus"
+dynamic = ["version"]
+description = "Interactive Lo-Fi music TUI with real-time spectrum analyzer"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "John Timoteo" }]
+requires-python = ">=3.11"
+keywords = ["lofi", "music", "tui", "terminal", "spectrum", "audio", "youtube"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+dependencies = [
+    "textual>=0.65.0",
+    "numpy>=2.0.0",
+    "sounddevice>=0.4.6",
+    "scipy>=1.13.0",
+    "pyfiglet>=1.0.2",
+    "yt-dlp>=2024.1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Beardynh/lofiplus"
+Repository = "https://github.com/Beardynh/lofiplus"
+Issues = "https://github.com/Beardynh/lofiplus/issues"
+Changelog = "https://github.com/Beardynh/lofiplus/blob/main/CHANGELOG.md"
+
+[project.scripts]
+lofiplus = "lofiplus.__main__:main"
+
+[tool.hatch.version]
+path = "lofiplus/__version__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lofiplus"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"lofiplus/css/lofiplus.tcss" = "lofiplus/css/lofiplus.tcss"
