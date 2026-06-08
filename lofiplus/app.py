@@ -135,6 +135,8 @@ class LofiPlusApp(App[None]):
 
     def on_track_list_selected(self, msg: TrackList.Selected) -> None:
         self._mpv.play(msg.url, on_status=self._mpv_status)
+        # Restore volume – mpv may have been restarted by _ensure_alive()
+        self._mpv.set_volume(self._vol)
         self._track = msg.name
         self._pause = False
         self._src.set_playing(True)

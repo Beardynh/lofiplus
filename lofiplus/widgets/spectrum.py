@@ -85,8 +85,9 @@ for _i in range(BANDS):
 class SpectrumWidget(Widget):
     DEFAULT_CSS = f"""
     SpectrumWidget {{
-        height: 14;
-        min-height: 6;
+        height: 1fr;
+        max-height: 14;
+        min-height: 4;
         background: {BG};
         background-tint: {BG} 0%;
         padding: 0 1;

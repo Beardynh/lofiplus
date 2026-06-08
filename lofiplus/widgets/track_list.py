@@ -20,8 +20,6 @@ class TrackList(Widget, can_focus=True):
         background: {BG};
         background-tint: {BG} 0%;
         padding: 1 0;
-        overflow-y: auto;
-        scrollbar-size-vertical: 1;
     }}
     """
 
@@ -41,7 +39,8 @@ class TrackList(Widget, can_focus=True):
         self._config    = StationsConfig(custom_stations=custom_stations)
         self._favorites = set(favorites or [])
         self._tracks: list[Track] = []
-        self._cursor    = 0
+        self._cursor      = 0
+        self._view_offset = 0
 
     def on_mount(self) -> None:
         self._load()
@@ -70,34 +69,98 @@ class TrackList(Widget, can_focus=True):
             return self._tracks[self._cursor]
         return None
 
-    def render(self) -> Text:
-        t = Text(no_wrap=True)
+    # ── Rendering with manual viewport ──────────────────────────────
+
+    def _build_lines(self) -> tuple[list[tuple], int]:
+        """Build line descriptors and locate the cursor line.
+
+        Returns ``(lines, cursor_line_index)`` where each entry in
+        *lines* is one of::
+
+            ("header", text, style)
+            ("track",  track_index, Track)
+            ("blank",)
+            ("dim",    text, style)
+        """
+        lines: list[tuple] = []
+        cursor_line = 0
+
         favs     = [tr for tr in self._tracks if tr.is_favorite]
         builtins = [tr for tr in self._tracks if not tr.is_favorite and not tr.is_local]
         locals_  = [tr for tr in self._tracks if tr.is_local]
 
         if favs:
-            t.append("   ★  FAVORITOS\n", style=f"dim {ACCENT}")
+            lines.append(("header", "   ★  FAVORITOS", f"dim {ACCENT}"))
             for tr in favs:
                 idx = self._tracks.index(tr)
-                self._row(t, idx, tr)
-            t.append("\n")
+                if idx == self._cursor:
+                    cursor_line = len(lines)
+                lines.append(("track", idx, tr))
+            lines.append(("blank",))
 
-        t.append("   ESTACIONES\n", style=f"dim {MUTED}")
+        lines.append(("header", "   ESTACIONES", f"dim {MUTED}"))
         for tr in builtins:
             idx = self._tracks.index(tr)
-            self._row(t, idx, tr)
+            if idx == self._cursor:
+                cursor_line = len(lines)
+            lines.append(("track", idx, tr))
 
-        t.append("\n   BIBLIOTECA LOCAL\n", style=f"dim {MUTED}")
+        lines.append(("blank",))
+        lines.append(("header", "   BIBLIOTECA LOCAL", f"dim {MUTED}"))
         if locals_:
             for tr in locals_:
                 idx = self._tracks.index(tr)
-                self._row(t, idx, tr)
+                if idx == self._cursor:
+                    cursor_line = len(lines)
+                lines.append(("track", idx, tr))
         else:
-            t.append("     Vacía — usa ctrl+/ para descargar\n", style=f"dim {DIM}")
+            lines.append(("dim", "     Vacía — usa ctrl+/ para descargar", f"dim {DIM}"))
+
+        return lines, cursor_line
+
+    def render(self) -> Text:
+        h = self.content_size.height
+        if h <= 0:
+            return Text()
+
+        lines, cursor_line = self._build_lines()
+
+        # ── Adjust viewport so the cursor is always visible ──────────
+        scroll_margin = min(2, h // 3)
+
+        if len(lines) > h:
+            if cursor_line < self._view_offset + scroll_margin:
+                self._view_offset = cursor_line - scroll_margin
+            elif cursor_line >= self._view_offset + h - scroll_margin:
+                self._view_offset = cursor_line - h + 1 + scroll_margin
+            self._view_offset = max(0, min(self._view_offset, len(lines) - h))
+        else:
+            self._view_offset = 0
+
+        start = self._view_offset
+        end   = start + h
+        visible = lines[start:end]
+
+        # ── Render only the visible window ───────────────────────────
+        t = Text(no_wrap=True)
+        for i, entry in enumerate(visible):
+            kind = entry[0]
+            if kind == "header":
+                t.append(entry[1], style=entry[2])
+            elif kind == "blank":
+                pass                        # empty line — newline added below
+            elif kind == "dim":
+                t.append(entry[1], style=entry[2])
+            elif kind == "track":
+                self._render_track(t, entry[1], entry[2])
+
+            if i < len(visible) - 1:
+                t.append("\n")
+
         return t
 
-    def _row(self, t: Text, idx: int, tr: Track) -> None:
+    def _render_track(self, t: Text, idx: int, tr: Track) -> None:
+        """Append a single track to *t* (no trailing newline)."""
         selected = idx == self._cursor
         prefix   = "▸ " if selected else "  "
         star     = "★ " if tr.is_favorite else ""
@@ -105,11 +168,13 @@ class TrackList(Widget, can_focus=True):
         if selected:
             t.append(f"   {prefix}",     style=f"bold {ACCENT}")
             t.append(f"{star}{tr.name}", style=f"bold {ACCENT}")
-            t.append(tag + "\n",         style=f"dim {MUTED}")
+            t.append(tag,                style=f"dim {MUTED}")
         else:
             color = ACCENT if tr.is_favorite else MUTED
             t.append(f"   {prefix}{star}{tr.name}", style=color)
-            t.append(tag + "\n",                    style=f"dim {BORDER}")
+            t.append(tag,                           style=f"dim {BORDER}")
+
+    # ── Keyboard navigation ──────────────────────────────────────────
 
     def on_key(self, event: Key) -> None:
         if event.key == "up":

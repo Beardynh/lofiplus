@@ -1,6 +1,6 @@
 """Single source of truth for lofiplus version metadata."""
 
-__version__ = "0.1.0"
+__version__ = "1.01"
 __author__  = "John Timoteo"
 __license__ = "MIT"
 __repo__    = "https://github.com/Beardynh/lofiplus"
