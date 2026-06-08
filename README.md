@@ -11,7 +11,7 @@
      ▀███                                                         
 ```
 
-# lofiplus
+# LofiPlus
 
 **Reproductor interactivo de música Lo-Fi para tu terminal**
 
