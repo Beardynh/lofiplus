@@ -85,6 +85,9 @@ class LofiPlusApp(App[None]):
         Binding("q",          "quit",            show=False),
     ]
 
+    # Backoff schedule for stream auto-reconnect (D2)
+    RECONNECT_DELAYS = (2.0, 5.0, 10.0)
+
     def __init__(self) -> None:
         super().__init__()
         self._config = user_config.load()
@@ -95,6 +98,12 @@ class LofiPlusApp(App[None]):
         self._track  = ""
         self._pause  = False
         self._favorites: set[str] = set(self._config.favorites)
+        # Now Playing metadata (D1)
+        self._now_playing = ""
+        # Auto-reconnect state (D2)
+        self._current_url       = ""
+        self._user_stopped      = False
+        self._reconnect_attempt = 0
 
     # ── Layout ──────────────────────────────────────────────────────────
 
@@ -120,11 +129,17 @@ class LofiPlusApp(App[None]):
         self.title = "lofiplus"
         # Restore volume from saved config
         self._upd()
+        # Unsolicited mpv events (end-file → auto-reconnect, file-loaded → reset)
+        self._mpv.set_event_callback(self._on_mpv_event)
+        # Now Playing: poll stream metadata every 5 s
+        self.set_interval(5.0, self._poll_now_playing)
         if not self._mpv.start():
             self.notify("Could not start mpv — is it installed?", severity="error")
             return
         self._mpv.set_volume(self._vol)
-        if not self._src.start():
+        # start() returns the active mode: "cava" | "loopback" | None (synthetic)
+        mode = self._src.start()
+        if mode is None:
             self.notify(
                 "Loopback unavailable — spectrum is synthetic. "
                 "Install sounddevice + a loopback device (BlackHole on macOS).",
@@ -139,6 +154,11 @@ class LofiPlusApp(App[None]):
         self._mpv.set_volume(self._vol)
         self._track = msg.name
         self._pause = False
+        # Reset reconnect + now-playing state for the new selection
+        self._current_url       = msg.url
+        self._user_stopped      = False
+        self._reconnect_attempt = 0
+        self._now_playing       = ""
         self._src.set_playing(True)
         self._upd()
 
@@ -151,10 +171,16 @@ class LofiPlusApp(App[None]):
         self.query_one("#tracks", TrackList).focus()
 
     def _on_dl(self, msg: str, kind: str) -> None:
-        self.call_from_thread(self._apply_status, msg, kind)
+        try:
+            self.call_from_thread(self._apply_status, msg, kind)
+        except Exception:
+            pass  # app shutting down
 
     def _mpv_status(self, msg: str, kind: str) -> None:
-        self.call_from_thread(self._apply_status, msg, kind)
+        try:
+            self.call_from_thread(self._apply_status, msg, kind)
+        except Exception:
+            pass  # app shutting down
 
     def _apply_status(self, msg: str, kind: str) -> None:
         try:
@@ -177,8 +203,11 @@ class LofiPlusApp(App[None]):
             self._upd()
 
     def action_do_stop(self) -> None:
+        self._user_stopped = True  # set BEFORE stop() so end-file is ignored
         self._mpv.stop()
-        self._track = ""
+        self._track       = ""
+        self._now_playing = ""
+        self._current_url = ""
         self._pause = False
         self._src.set_playing(False)
         self._upd()
@@ -230,7 +259,10 @@ class LofiPlusApp(App[None]):
             "quit":  self._cmd_quit,
         }.get(command)
         if handler is not None:
-            asyncio.create_task(handler())
+            # run_worker uses the app's own event loop and cancels the
+            # coroutine cleanly on shutdown (create_task from a sync
+            # callback can race the loop teardown)
+            self.run_worker(handler(), exclusive=False)
 
     async def _cmd_act(self) -> None:
         from lofiplus.core.updater import is_newer, latest_version
@@ -267,12 +299,95 @@ class LofiPlusApp(App[None]):
         self.exit()
 
     def _upd(self) -> None:
+        # Compose display: "Now Playing — Station" when stream metadata is known
+        display = self._track
+        if self._now_playing and self._now_playing != self._track:
+            display = f"{self._now_playing} — {self._track}"
         try:
             self.query_one("#title", TitleBar).set_state(
-                track=self._track, vol=self._vol, pause=self._pause
+                track=display, vol=self._vol, pause=self._pause
             )
         except Exception:
             pass
+
+    # ── Now Playing (D1) ────────────────────────────────────────────────
+
+    def _poll_now_playing(self) -> None:
+        if not self._track or not self._mpv.is_alive():
+            return
+        # IPC is blocking — query in a thread worker; exclusive group avoids
+        # piling up if mpv is slow to answer
+        self.run_worker(
+            self._fetch_now_playing, thread=True,
+            exclusive=True, group="now-playing",
+        )
+
+    def _fetch_now_playing(self) -> None:
+        title = self._mpv.get_media_title()
+        try:
+            self.call_from_thread(self._apply_now_playing, title)
+        except Exception:
+            pass  # app shutting down
+
+    def _apply_now_playing(self, title: str) -> None:
+        title = " ".join(title.split())  # collapse whitespace/newlines
+        # mpv reports the URL itself when the stream has no metadata
+        if not title or title.startswith(("http://", "https://")):
+            title = ""
+        if title != self._now_playing:
+            self._now_playing = title
+            self._upd()
+
+    # ── Auto-reconnect (D2) ─────────────────────────────────────────────
+
+    def _on_mpv_event(self, msg: dict) -> None:
+        """Unsolicited mpv events — runs on the IPC reader thread."""
+        event = msg.get("event")
+        try:
+            if event == "end-file":
+                self.call_from_thread(self._handle_end_file, str(msg.get("reason", "")))
+            elif event == "file-loaded":
+                self.call_from_thread(self._reset_reconnect)
+        except Exception:
+            pass  # app shutting down
+
+    def _reset_reconnect(self) -> None:
+        self._reconnect_attempt = 0
+
+    def _handle_end_file(self, reason: str) -> None:
+        # Only error/eof are interesting: "stop" fires for our own stop and
+        # for loadfile-replace; "quit"/"redirect" are not stream drops.
+        if reason not in ("error", "eof"):
+            return
+        if self._user_stopped or not self._current_url:
+            return
+        # A local file reaching eof simply finished — clear the display
+        if "://" not in self._current_url:
+            self._track       = ""
+            self._now_playing = ""
+            self._current_url = ""
+            self._src.set_playing(False)
+            self._upd()
+            return
+        if self._reconnect_attempt >= len(self.RECONNECT_DELAYS):
+            self._apply_status("Stream dropped — gave up after 3 attempts", "error")
+            self._reconnect_attempt = 0
+            self._src.set_playing(False)
+            return
+        delay = self.RECONNECT_DELAYS[self._reconnect_attempt]
+        self._reconnect_attempt += 1
+        self._apply_status(
+            f"Stream dropped — reconnecting in {delay:.0f}s "
+            f"(attempt {self._reconnect_attempt}/{len(self.RECONNECT_DELAYS)})",
+            "muted",
+        )
+        self.set_timer(delay, self._do_reconnect)
+
+    def _do_reconnect(self) -> None:
+        if self._user_stopped or not self._current_url:
+            return
+        self._mpv.play(self._current_url, on_status=self._mpv_status)
+        self._mpv.set_volume(self._vol)
 
     # ── Cleanup ─────────────────────────────────────────────────────────
 
@@ -285,5 +400,6 @@ class LofiPlusApp(App[None]):
             user_config.save(self._config)
         except Exception:
             pass
+        self._dl.stop()
         self._src.stop()
         self._mpv.quit()

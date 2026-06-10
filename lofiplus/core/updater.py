@@ -21,11 +21,23 @@ import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
-from lofiplus import __api__, __version__
+from lofiplus import __api__, __repo__, __version__
 
 CACHE_DIR  = Path.home() / ".cache" / "lofiplus"
 CACHE_FILE = CACHE_DIR / "release.json"
 CACHE_TTL  = 3600  # 1 hour
+
+# Accepted forms of the official remote — perform_update() refuses to pull
+# from anything else (defends against a swapped remote in the install dir).
+_REPO_HTTPS = __repo__.rstrip("/")
+_REPO_PATH  = _REPO_HTTPS.split("github.com/", 1)[-1]
+_OFFICIAL_REMOTES = {
+    _REPO_HTTPS,
+    _REPO_HTTPS + ".git",
+    f"git@github.com:{_REPO_PATH}",
+    f"git@github.com:{_REPO_PATH}.git",
+    f"ssh://git@github.com/{_REPO_PATH}.git",
+}
 
 
 class ReleaseInfo(NamedTuple):
@@ -38,8 +50,12 @@ class ReleaseInfo(NamedTuple):
 # ── Version comparison ──────────────────────────────────────────────────────
 
 def _parse_semver(s: str) -> tuple[int, int, int]:
-    """Parse '1.2.3' or 'v1.2.3' → (1, 2, 3). Missing parts default to 0."""
-    s = s.lstrip("v").strip()
+    """Parse '1.2.3', 'v1.2.3' or 'v1.2.3-beta+meta' → (1, 2, 3).
+
+    Pre-release/build suffixes are dropped so 'v1.0.0-beta' compares as
+    1.0.0 instead of mis-parsing. Missing parts default to 0.
+    """
+    s = s.lstrip("v").strip().split("-")[0].split("+")[0]
     m = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", s)
     if not m:
         return (0, 0, 0)
@@ -57,16 +73,29 @@ def _load_cache() -> ReleaseInfo | None:
         return None
     try:
         data = json.loads(CACHE_FILE.read_text())
-        if time.time() - data.get("checked_at", 0) > CACHE_TTL:
-            return None
-        return ReleaseInfo(
-            tag=data["tag"],
-            version=data["version"],
-            body=data.get("body", ""),
-            html_url=data.get("html_url", ""),
-        )
-    except (OSError, json.JSONDecodeError, KeyError):
+    except (OSError, json.JSONDecodeError):
         return None
+    # The cache file is plain local data — validate every field's type
+    # before trusting it (a corrupted/tampered file must not crash us
+    # or smuggle non-string content into the UI).
+    if not isinstance(data, dict):
+        return None
+    tag     = data.get("tag")
+    version = data.get("version")
+    body    = data.get("body", "")
+    url     = data.get("html_url", "")
+    checked = data.get("checked_at", 0)
+    if not (
+        isinstance(tag, str) and tag
+        and isinstance(version, str)
+        and isinstance(body, str)
+        and isinstance(url, str)
+        and isinstance(checked, (int, float))
+    ):
+        return None
+    if time.time() - checked > CACHE_TTL:
+        return None
+    return ReleaseInfo(tag=tag, version=version, body=body, html_url=url)
 
 
 def _save_cache(info: ReleaseInfo) -> None:
@@ -174,12 +203,28 @@ def perform_update() -> bool:
     install_dir = _find_install_dir()
     if install_dir is None:
         print("✗ Could not locate install directory", file=sys.stderr)
-        print(f"  Manually clone: git clone https://github.com/Beardynh/lofiplus.git", file=sys.stderr)
+        print(f"  Manually clone: git clone {_REPO_HTTPS}.git", file=sys.stderr)
         return False
 
-    if not (install_dir / ".git").exists():
+    # Re-check existence: _find_install_dir() may rely on LOFIPLUS_HOME and
+    # the directory can disappear between the check and the git operations.
+    if not install_dir.exists() or not (install_dir / ".git").exists():
         print("✗ Install directory is not a git clone — cannot auto-update", file=sys.stderr)
-        print(f"  Re-install with: git clone https://github.com/Beardynh/lofiplus.git {install_dir}", file=sys.stderr)
+        print(f"  Re-install with: git clone {_REPO_HTTPS}.git {install_dir}", file=sys.stderr)
+        return False
+
+    # Only ever pull from the official repository — a swapped remote in the
+    # install dir must not become arbitrary code execution via pip install.
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(install_dir), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        remote = ""
+    if remote.rstrip("/") not in _OFFICIAL_REMOTES:
+        print(f"✗ Unexpected git remote: {remote!r}", file=sys.stderr)
+        print(f"  Expected {_REPO_HTTPS} — refusing to update", file=sys.stderr)
         return False
 
     print(f"⇣ Updating lofiplus in {install_dir}...")
@@ -187,8 +232,9 @@ def perform_update() -> bool:
         subprocess.run(
             ["git", "-C", str(install_dir), "pull", "--ff-only"],
             check=True,
+            timeout=120,
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print("✗ git pull failed", file=sys.stderr)
         return False
 

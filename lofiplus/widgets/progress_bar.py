@@ -37,39 +37,46 @@ class ProgressBar(Widget):
     }}
     """
 
+    POLL_INTERVAL = 0.5  # seconds between mpv IPC queries
+
     def __init__(self, mpv: "MpvController", **kw) -> None:
         super().__init__(**kw)
         self._mpv     = mpv
         self._pos     = 0.0
         self._dur     = 0.0
         self._last_poll_time = time.time()
-        self._poll_lock = threading.Lock()
-        self._polling   = False
+        self._stop_evt = threading.Event()
+        self._poll_thread: threading.Thread | None = None
 
     def on_mount(self) -> None:
-        # Poll mpv twice a second for authoritative data
-        self.set_interval(0.5, self._poll_mpv)
+        # One persistent poller thread: at most one IPC request in flight,
+        # no per-tick thread creation, no check-and-set race on a flag.
+        self._stop_evt.clear()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="mpv-progress"
+        )
+        self._poll_thread.start()
         # Refresh the UI at 15 FPS for smooth interpolation
         self.set_interval(1.0 / 15.0, self.refresh)
 
-    def _poll_mpv(self) -> None:
-        """Query mpv for time-pos and duration in a worker thread (IPC is blocking)."""
-        if self._polling or not self._mpv.is_alive():
-            return
-        self._polling = True
+    def on_unmount(self) -> None:
+        self._stop_evt.set()
 
-        def _worker():
+    def _poll_loop(self) -> None:
+        """Daemon thread: query mpv every POLL_INTERVAL until stopped."""
+        while not self._stop_evt.wait(self.POLL_INTERVAL):
+            if not self._mpv.is_alive():
+                continue
             try:
                 pos = self._mpv.get_time_pos()
                 dur = self._mpv.get_duration()
-                try:
-                    self.app.call_from_thread(self._update, pos, dur)
-                except Exception:
-                    pass
-            finally:
-                self._polling = False
-
-        threading.Thread(target=_worker, daemon=True, name="mpv-progress").start()
+            except Exception:
+                continue
+            try:
+                self.app.call_from_thread(self._update, pos, dur)
+            except Exception:
+                # App is shutting down — stop polling
+                return
 
     def _update(self, pos: float, dur: float) -> None:
         self._pos = pos

@@ -22,19 +22,40 @@ ProgressCallback = Callable[[str, str], None]
 class Downloader:
     def __init__(self, on_progress: ProgressCallback | None = None) -> None:
         self._cb = on_progress
-        self._q: queue.Queue[str] = queue.Queue(maxsize=1)
+        self._stopping = False
+        # None is the shutdown sentinel
+        self._q: queue.Queue[str | None] = queue.Queue(maxsize=1)
         threading.Thread(target=self._worker, daemon=True, name="yt-dlp").start()
 
     def enqueue(self, url: str) -> bool:
+        if self._stopping:
+            return False
         try:
             self._q.put_nowait(url)
             return True
         except queue.Full:
             return False
 
+    def stop(self) -> None:
+        """Best-effort graceful shutdown: drain pending URLs, wake the worker."""
+        self._stopping = True
+        try:
+            while True:
+                self._q.get_nowait()
+                self._q.task_done()
+        except queue.Empty:
+            pass
+        try:
+            self._q.put_nowait(None)
+        except queue.Full:
+            pass  # worker is mid-download; daemon thread dies with the process
+
     def _worker(self) -> None:
         while True:
             url = self._q.get()
+            if url is None:
+                self._q.task_done()
+                break
             try:
                 self._run(url)
             except Exception as e:

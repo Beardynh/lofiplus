@@ -76,6 +76,10 @@ lofiplus
 
 El script `install.sh` detectará las dependencias faltantes y te mostrará el comando exacto para tu plataforma.
 
+> **Sin cava** el espectro sigue funcionando: lofiplus cae a su propia captura
+> loopback (sounddevice) y, si tampoco hay dispositivo loopback, a un
+> visualizador sintético animado. cava solo da el resultado más fluido.
+
 ---
 
 ## ⌨️ Atajos de teclado

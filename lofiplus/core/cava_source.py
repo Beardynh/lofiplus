@@ -139,8 +139,10 @@ class CavaSource:
             # Write a temp config file (cava needs a file, not stdin)
             try:
                 fd, path = tempfile.mkstemp(prefix="lofiplus_cava_", suffix=".conf")
-                os.write(fd, config_text.encode())
-                os.close(fd)
+                try:
+                    os.write(fd, config_text.encode())
+                finally:
+                    os.close(fd)
                 self._config_path = Path(path)
             except OSError:
                 continue
@@ -220,8 +222,10 @@ class CavaSource:
 
     def _cleanup_config(self) -> None:
         if self._config_path is not None:
-            try:
-                self._config_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            # Belt-and-braces: only ever delete a file we created ourselves
+            if self._config_path.name.startswith("lofiplus_cava_"):
+                try:
+                    self._config_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             self._config_path = None

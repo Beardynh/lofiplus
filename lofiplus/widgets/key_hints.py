@@ -20,6 +20,8 @@ class KeyHints(Widget):
         ("↑↓",    "navegar"),
         ("enter", "play"),
         ("space", "pausa"),
+        ("b",     "buscar"),
+        ("f",     "favorito"),
         ("=/-",   "vol"),
         ("/",     "comandos"),
         ("ctrl+/", "descargar"),

@@ -61,13 +61,23 @@ class MpvController:
         self._lock      = threading.Lock()
         self._running   = False
         self._reader: threading.Thread | None = None
+        # _pending/_results are shared between _send() callers and the reader
+        # thread — every access goes through self._lock (see _send/_read_loop)
         self._pending: dict[int, threading.Event] = {}
         self._results: dict[int, Any] = {}
         self._start_lock = threading.Lock()  # serialise start / restart
+        # Optional callback for unsolicited mpv events (e.g. end-file).
+        # NOTE: invoked on the reader thread — UI code must re-dispatch
+        # via app.call_from_thread.
+        self._event_cb: Callable[[dict], None] | None = None
 
     @property
     def ipc_path(self) -> str:
         return self._ipc_path
+
+    def set_event_callback(self, cb: Callable[[dict], None] | None) -> None:
+        """Register a callback for unsolicited mpv events (runs on reader thread)."""
+        self._event_cb = cb
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -142,8 +152,9 @@ class MpvController:
         """Stop mpv and clean up."""
         self._running = False
         # Wake any threads blocked in _send()
-        for ev in list(self._pending.values()):
-            ev.set()
+        with self._lock:
+            for ev in list(self._pending.values()):
+                ev.set()
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -162,8 +173,9 @@ class MpvController:
             self._proc = None
         if not IS_WINDOWS:
             Path(self._ipc_path).unlink(missing_ok=True)
-        self._pending.clear()
-        self._results.clear()
+        with self._lock:
+            self._pending.clear()
+            self._results.clear()
 
     def is_alive(self) -> bool:
         return self._running and self._proc is not None and self._proc.poll() is None
@@ -194,9 +206,20 @@ class MpvController:
                         except json.JSONDecodeError:
                             continue
                         rid = msg.get("request_id")
-                        if rid is not None and rid in self._pending:
-                            self._results[rid] = msg.get("data")
-                            self._pending[rid].set()
+                        if rid is not None:
+                            # Atomic check-and-store: if the caller already
+                            # timed out and removed its entry, drop the data
+                            # (otherwise _results leaks orphan entries).
+                            with self._lock:
+                                ev = self._pending.get(rid)
+                                if ev is not None:
+                                    self._results[rid] = msg.get("data")
+                                    ev.set()
+                        elif "event" in msg and self._event_cb is not None:
+                            try:
+                                self._event_cb(msg)
+                            except Exception:
+                                pass
                 except (OSError, ValueError):
                     break
         finally:
@@ -204,19 +227,20 @@ class MpvController:
             # instead of blocking on the 2 s timeout.
             self._running = False
             # Wake every caller still waiting for a response.
-            for ev in list(self._pending.values()):
-                ev.set()
+            with self._lock:
+                for ev in list(self._pending.values()):
+                    ev.set()
 
     # ── Send commands ────────────────────────────────────────────────────
 
     def _send(self, command: list[Any], timeout: float = 2.0) -> Any:
         if self._conn is None or not self._running:
             return None
+        ev = threading.Event()
         with self._lock:
             self._rid += 1
             rid = self._rid
-        ev = threading.Event()
-        self._pending[rid] = ev
+            self._pending[rid] = ev
         payload = (json.dumps({"command": command, "request_id": rid}) + "\n").encode()
         try:
             if IS_WINDOWS:
@@ -225,11 +249,16 @@ class MpvController:
             else:
                 self._conn.sendall(payload)
         except OSError:
-            self._pending.pop(rid, None)
+            with self._lock:
+                self._pending.pop(rid, None)
+                self._results.pop(rid, None)
             return None
         ev.wait(timeout)
-        result = self._results.pop(rid, None)
-        self._pending.pop(rid, None)
+        # Pop pending first: once it's gone the reader can no longer insert
+        # a result for this rid, so popping results right after can't leak.
+        with self._lock:
+            self._pending.pop(rid, None)
+            result = self._results.pop(rid, None)
         return result
 
     # ── Public API ───────────────────────────────────────────────────────
@@ -257,10 +286,19 @@ class MpvController:
         """
         if not url:
             return
-        # Validate local file extension
-        p = Path(url)
-        if p.exists() and p.suffix.lower() not in ALLOWED_LOCAL_EXTS:
-            return
+        # Local path (no URL scheme): must exist AND have an allowed extension.
+        # Without the exists() requirement a typo'd path used to reach mpv
+        # and fail with an opaque error.
+        if "://" not in url:
+            p = Path(url)
+            if not p.exists():
+                if on_status:
+                    on_status("File not found", "error")
+                return
+            if p.suffix.lower() not in ALLOWED_LOCAL_EXTS:
+                if on_status:
+                    on_status(f"Unsupported format: {p.suffix or '(none)'}", "error")
+                return
         # Ensure mpv is alive before sending commands
         if not self._ensure_alive():
             if on_status:

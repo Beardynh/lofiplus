@@ -53,9 +53,19 @@ class ChangelogModal(ModalScreen[None]):
 
     def __init__(self, tag: str, body: str, url: str) -> None:
         super().__init__()
-        self._tag  = tag
-        self._body = body or "*(No release notes provided.)*"
-        self._url  = url
+        self._tag = tag
+        self._url = url
+        # The body comes from GitHub (or a local cache file) — pre-flight it
+        # so malformed/huge content can't take down the modal.
+        safe = body or "*(No release notes provided.)*"
+        if len(safe) > 20_000:
+            safe = safe[:20_000] + "\n\n*(truncated)*"
+        try:
+            from markdown_it import MarkdownIt  # textual's own parser
+            MarkdownIt().parse(safe)
+        except Exception:
+            safe = "```text\n" + safe.replace("`", "'") + "\n```"
+        self._body = safe
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):

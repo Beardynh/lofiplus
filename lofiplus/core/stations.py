@@ -51,10 +51,22 @@ class StationsConfig:
         return [Track(name=s["name"], url=s["url"], tag=s.get("tag", "")) for s in BUILTIN_STATIONS]
 
     def custom_stations(self) -> list[Track]:
+        from urllib.parse import urlparse
+
         out = []
         for s in self._custom:
-            if isinstance(s, dict) and "name" in s and "url" in s:
-                out.append(Track(name=s["name"], url=s["url"], tag=s.get("tag", "custom")))
+            if not (isinstance(s, dict) and isinstance(s.get("name"), str) and isinstance(s.get("url"), str)):
+                continue
+            name = s["name"].strip()
+            url  = s["url"].strip()
+            if not name or not url:
+                continue
+            # Custom stations come from a user-editable config file —
+            # only accept well-formed http(s) URLs.
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                continue
+            out.append(Track(name=name, url=url, tag=str(s.get("tag", "custom"))))
         return out
 
     def scan_local(self) -> list[Track]:

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-07
+
+### Security
+- `install.sh`: removed `rsync --delete` and added install-path validation —
+  a misconfigured `LOFIPLUS_HOME` could previously wipe user data
+- `install.ps1`: `robocopy /MIR` → `/E` (no mirror-delete), exit-code check,
+  removed `Invoke-Expression`
+- Updater: `lofiplus -a` now refuses to `git pull` from any remote other than
+  the official repository, re-validates the install dir, and type-checks the
+  release cache before trusting it
+
+### Fixed
+- Race condition in the progress bar poller (one persistent thread instead of
+  spawning a thread every 500 ms)
+- Slow memory leak in the mpv IPC client when a request timed out just as its
+  response arrived (orphaned `_results` entries)
+- Command palette actions now run via Textual's `run_worker` (no more
+  `asyncio.create_task` from a sync callback)
+- Downloader thread now shuts down gracefully on exit (sentinel-based stop)
+- Playing a non-existent local path now reports "File not found" instead of
+  silently failing inside mpv
+- Config writer escapes newlines/control characters — YouTube titles with
+  exotic characters no longer corrupt `config.toml`
+- Versioning normalized to semver (`1.01` → `1.0.1`)
+
+### Added
+- Now Playing: the title bar shows the actual track playing on the stream
+  (icecast/YouTube metadata via mpv `media-title`)
+- Auto-reconnect for dropped live streams with backoff (3 attempts)
+- In-list search: press `b` and type to filter stations and local library
+- `install.sh` now checks for `cava` (optional) and explains the fallback
+
+### Removed
+- Unused dependencies `scipy` and `pyfiglet`
+
 ## [0.1.0] - 2026-06-06
 
 ### Added

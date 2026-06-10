@@ -75,7 +75,16 @@ def load() -> Config:
 # ── Save (simple writer, no extra dep) ──────────────────────────────────────
 
 def _esc(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+    """Escape a string for a TOML basic string.
+
+    Real-world YouTube titles contain quotes, backslashes and even newlines —
+    all of which would corrupt the file (and lose the user's favorites) if
+    written raw.
+    """
+    out = s.replace("\\", "\\\\").replace('"', '\\"')
+    out = out.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    # Drop any remaining control characters TOML forbids
+    return "".join(ch for ch in out if ch >= " " or ch in ("\\",))
 
 
 def save(cfg: Config) -> None:

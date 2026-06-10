@@ -20,6 +20,19 @@ $VenvDir    = Join-Path $InstallDir ".venv"
 $BinDir     = Join-Path $InstallDir "bin"
 $Launcher   = Join-Path $BinDir "lofiplus.cmd"
 
+# ─── Safety: refuse dangerous install targets ────────────────────────────────
+# $InstallDir is user-controllable via LOFIPLUS_HOME; never point file
+# operations at a directory that could hold unrelated user data.
+$normalizedDir = $InstallDir.TrimEnd('\', '/')
+if (-not $normalizedDir.ToLower().EndsWith("lofiplus")) {
+    Write-Err "LOFIPLUS_HOME must end in 'lofiplus' (got: $InstallDir)"
+    exit 1
+}
+if ($normalizedDir -eq $env:USERPROFILE -or $normalizedDir.Length -le 3) {
+    Write-Err "Refusing to install into $InstallDir"
+    exit 1
+}
+
 # ─── Banner ──────────────────────────────────────────────────────────────────
 @'
 
@@ -37,19 +50,28 @@ Write-Host "  github.com/Beardynh/lofiplus`n"          -ForegroundColor DarkGray
 # ─── 1. Check Python ─────────────────────────────────────────────────────────
 Write-Hdr "1/6  Checking Python (>=3.11)"
 
-$Python = $null
-foreach ($cand in @("py -3.13", "py -3.12", "py -3.11", "python", "python3")) {
+$PythonExe  = $null
+$PythonArgs = @()
+$pyProbe = "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}'); sys.exit(0 if sys.version_info >= (3,11) else 1)"
+foreach ($cand in @(
+    @{ exe = "py";      args = @("-3.13") },
+    @{ exe = "py";      args = @("-3.12") },
+    @{ exe = "py";      args = @("-3.11") },
+    @{ exe = "python";  args = @() },
+    @{ exe = "python3"; args = @() }
+)) {
     try {
-        $verCheck = Invoke-Expression "$cand -c `"import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}'); sys.exit(0 if sys.version_info >= (3,11) else 1)`"" 2>$null
+        $verCheck = & $cand.exe @($cand.args) -c $pyProbe 2>$null
         if ($LASTEXITCODE -eq 0) {
-            $Python = $cand
-            Write-OK "Found $cand (Python $verCheck)"
+            $PythonExe  = $cand.exe
+            $PythonArgs = $cand.args
+            Write-OK "Found $($cand.exe) $($cand.args -join ' ') (Python $verCheck)"
             break
         }
     } catch { }
 }
 
-if (-not $Python) {
+if (-not $PythonExe) {
     Write-Err "Python 3.11+ not found"
     Write-Host "    Install from https://python.org or run: " -NoNewline
     Write-Host "winget install Python.Python.3.12" -ForegroundColor White
@@ -87,7 +109,13 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $BinDir     | Out-Null
 
 if ($ScriptDir -ne $InstallDir) {
-    robocopy $ScriptDir $InstallDir /MIR /XD .venv __pycache__ .git build dist *.egg-info /XF *.pyc /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+    # /E copies subdirectories without deleting anything in the destination
+    # (never /MIR: $InstallDir is user-configurable and mirroring deletes)
+    robocopy $ScriptDir $InstallDir /E /XD .venv __pycache__ .git build dist *.egg-info /XF *.pyc /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        Write-Err "robocopy failed with exit code $LASTEXITCODE"
+        exit 1
+    }
     Write-OK "Code copied"
 } else {
     Write-OK "Already in target location"
@@ -96,7 +124,11 @@ if ($ScriptDir -ne $InstallDir) {
 # ─── 4. Create venv & install ────────────────────────────────────────────────
 Write-Hdr "4/6  Creating Python venv"
 
-Invoke-Expression "$Python -m venv `"$VenvDir`""
+& $PythonExe @PythonArgs -m venv $VenvDir
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "venv creation failed"
+    exit 1
+}
 Write-OK "venv created at $VenvDir"
 
 $VenvPip    = Join-Path $VenvDir "Scripts\pip.exe"

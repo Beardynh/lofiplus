@@ -39,6 +39,12 @@ class SpectrumSource:
         return self._mode
 
     def start(self) -> str | None:
+        """Start the best available audio source.
+
+        Returns the active mode — "cava" or "loopback" — or None when no
+        real capture is available and the visualizer must use the synthetic
+        generator. Callers must compare against None, not truthiness alone.
+        """
         # 1) Try CAVA first
         cava = CavaSource()
         if cava.start():

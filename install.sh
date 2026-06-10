@@ -34,6 +34,21 @@ BIN_DIR="${LOFIPLUS_BIN:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_DIR/.venv"
 LAUNCHER="$BIN_DIR/lofiplus"
 
+# ─── Safety: refuse dangerous install targets ────────────────────────────────
+# INSTALL_DIR is user-controllable via LOFIPLUS_HOME; never point file
+# operations at a directory that could hold unrelated user data.
+case "$INSTALL_DIR" in
+    */lofiplus) ;;
+    *)
+        printf "  ✗ LOFIPLUS_HOME must end in '/lofiplus' (got: %s)\n" "$INSTALL_DIR" >&2
+        exit 1
+        ;;
+esac
+if [[ "$INSTALL_DIR" == "$HOME" || "$INSTALL_DIR" == "/" ]]; then
+    printf "  ✗ Refusing to install into %s\n" "$INSTALL_DIR" >&2
+    exit 1
+fi
+
 OS="$(uname -s)"
 case "$OS" in
     Linux*)   PLATFORM="linux"; PKG_HINT="" ;;
@@ -98,11 +113,19 @@ for cmd in mpv yt-dlp ffmpeg; do
     fi
 done
 
+# cava is optional: without it the spectrum falls back to loopback/synthetic
+if command -v cava >/dev/null 2>&1; then
+    ok "cava (real-time spectrum)"
+else
+    warn "cava not found — spectrum will use loopback/synthetic fallback"
+    printf "    Optional: ${BOLD}%s cava${RESET}\n" "$PKG_HINT"
+fi
+
 if [[ ${#MISSING[@]} -gt 0 ]]; then
     printf "\n    Install missing tools with:\n"
     printf "    ${BOLD}%s %s${RESET}\n\n" "$PKG_HINT" "${MISSING[*]}"
     printf "    Continue anyway? [y/N] "
-    read -r answer
+    read -r answer || exit 1
     [[ "$answer" =~ ^[Yy]$ ]] || exit 1
 fi
 
@@ -112,15 +135,16 @@ hdr "3/6  Installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
 if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
-    # Use rsync if available (excludes .venv, __pycache__), fallback to cp
+    # Plain copy (no --delete: INSTALL_DIR may be user-configured; never
+    # mirror-delete a directory we don't fully own)
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a --delete \
+        rsync -a \
             --exclude='.venv' --exclude='__pycache__' \
             --exclude='*.pyc' --exclude='.git' \
             --exclude='build' --exclude='dist' --exclude='*.egg-info' \
-            "$SCRIPT_DIR/" "$INSTALL_DIR/"
+            "$SCRIPT_DIR/" "$INSTALL_DIR/" || { err "rsync failed"; exit 1; }
     else
-        cp -R "$SCRIPT_DIR/." "$INSTALL_DIR/"
+        cp -R "$SCRIPT_DIR/." "$INSTALL_DIR/" || { err "copy failed"; exit 1; }
     fi
     ok "Code copied"
 else
