@@ -110,8 +110,23 @@ class AudioCapture:
         self._stream = None
         self._device = None
 
-    def start(self) -> bool:
-        """Detect platform-appropriate loopback and start the input stream."""
+    @staticmethod
+    def _monitor_exists(name: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "short", "sources"],
+                capture_output=True, text=True, timeout=3,
+            )
+            return name in result.stdout
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return False
+
+    def start(self, preferred_monitor: str | None = None) -> bool:
+        """Detect platform-appropriate loopback and start the input stream.
+
+        preferred_monitor: monitor source to use instead of the system
+        default (e.g. the isolated lofiplus sink's monitor on Linux).
+        """
         try:
             import sounddevice as sd  # type: ignore
         except ImportError:
@@ -126,7 +141,10 @@ class AudioCapture:
         )
 
         if IS_LINUX:
-            self._device = find_pipewire_monitor()
+            if preferred_monitor and self._monitor_exists(preferred_monitor):
+                self._device = preferred_monitor
+            else:
+                self._device = find_pipewire_monitor()
             if self._device is None:
                 return False
             stream_kwargs["device"] = self._device

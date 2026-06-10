@@ -22,6 +22,7 @@ class KeyHints(Widget):
         ("space", "pausa"),
         ("b",     "buscar"),
         ("f",     "favorito"),
+        ("v",     "visual"),
         ("=/-",   "vol"),
         ("/",     "comandos"),
         ("ctrl+/", "descargar"),

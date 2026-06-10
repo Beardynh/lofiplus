@@ -123,11 +123,16 @@ class CavaSource:
     def is_available() -> bool:
         return shutil.which("cava") is not None
 
-    def start(self) -> bool:
+    def start(self, preferred_source: str | None = None) -> bool:
+        """Start cava. If preferred_source is given (e.g. the lofiplus
+        isolated sink's monitor), try it FIRST so the visualizer only
+        reacts to our own audio."""
         if not self.is_available():
             return False
 
         candidates = _get_cava_candidates()
+        if preferred_source:
+            candidates.insert(0, ("pulse", preferred_source))
         for method, source in candidates:
             config_text = _CAVA_CONFIG_TPL.format(
                 bars=N_BARS,

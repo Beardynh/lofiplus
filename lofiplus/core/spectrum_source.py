@@ -38,8 +38,12 @@ class SpectrumSource:
     def mode(self) -> str | None:
         return self._mode
 
-    def start(self) -> str | None:
+    def start(self, monitor: str | None = None) -> str | None:
         """Start the best available audio source.
+
+        monitor: optional isolated monitor source (lofiplus null sink) —
+        when provided, both CAVA and the loopback fallback capture from it
+        so the visualizer only reacts to lofiplus' own audio.
 
         Returns the active mode — "cava" or "loopback" — or None when no
         real capture is available and the visualizer must use the synthetic
@@ -47,14 +51,14 @@ class SpectrumSource:
         """
         # 1) Try CAVA first
         cava = CavaSource()
-        if cava.start():
+        if cava.start(preferred_source=monitor):
             self._cava = cava
             self._mode = "cava"
             return "cava"
 
         # 2) Try our own loopback + FFT
         cap = AudioCapture()
-        if cap.start():
+        if cap.start(preferred_monitor=monitor):
             self._capture = cap
             self._mode = "loopback"
             return "loopback"

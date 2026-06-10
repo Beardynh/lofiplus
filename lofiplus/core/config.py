@@ -32,6 +32,7 @@ class Config:
 
     # [appearance]
     theme: str = "dark"
+    visualizer: str = "aurora"  # "aurora" | "bars"
 
     # [update]
     auto_check: bool = True
@@ -61,10 +62,15 @@ def load() -> Config:
     favorites  = data.get("favorites", {})
     stations   = data.get("stations", {})
 
+    visualizer = str(appearance.get("visualizer", "aurora"))
+    if visualizer not in ("aurora", "bars"):
+        visualizer = "aurora"
+
     return Config(
         volume               = int(player.get("volume", 70)),
         last_played          = str(player.get("last_played", "")),
         theme                = str(appearance.get("theme", "dark")),
+        visualizer           = visualizer,
         auto_check           = bool(update.get("auto_check", True)),
         check_interval_hours = int(update.get("check_interval_hours", 24)),
         favorites            = list(favorites.get("tracks", [])),
@@ -102,6 +108,7 @@ def save(cfg: Config) -> None:
     lines.append("")
     lines.append("[appearance]")
     lines.append(f'theme = "{_esc(cfg.theme)}"')
+    lines.append(f'visualizer = "{_esc(cfg.visualizer)}"')
     lines.append("")
     lines.append("[update]")
     lines.append(f"auto_check = {'true' if cfg.auto_check else 'false'}")

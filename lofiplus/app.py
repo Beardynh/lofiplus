@@ -30,6 +30,7 @@ from textual.widgets import Rule
 
 from lofiplus import __version__
 from lofiplus.core import config as user_config
+from lofiplus.core.audio_router import AudioRouter
 from lofiplus.core.downloader import Downloader
 from lofiplus.core.mpv_controller import MpvController
 from lofiplus.core.spectrum_source import SpectrumSource
@@ -78,8 +79,9 @@ class LofiPlusApp(App[None]):
         Binding("s",          "do_stop",         show=False),
         Binding("equal",      "vol_up",          show=False),
         Binding("minus",      "vol_down",        show=False),
-        Binding("f",          "toggle_favorite", show=False),
-        Binding("slash",      "command_palette", show=False),
+        Binding("f",          "toggle_favorite",  show=False),
+        Binding("v",          "cycle_visualizer", show=False),
+        Binding("slash",      "command_palette",  show=False),
         Binding("ctrl+slash", "focus_dl",        show=False),
         Binding("escape",     "blur_dl",         show=False),
         Binding("q",          "quit",            show=False),
@@ -91,6 +93,7 @@ class LofiPlusApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self._config = user_config.load()
+        self._router = AudioRouter()
         self._mpv    = MpvController()
         self._src    = SpectrumSource()
         self._dl     = Downloader(self._on_dl)
@@ -110,7 +113,7 @@ class LofiPlusApp(App[None]):
     def compose(self) -> ComposeResult:
         yield TitleBar(id="title")
         yield Rule()
-        yield SpectrumWidget(self._src, id="spectrum")
+        yield SpectrumWidget(self._src, mode=self._config.visualizer, id="spectrum")
         yield ProgressBar(self._mpv, id="progress")
         yield Rule()
         yield TrackList(
@@ -133,12 +136,24 @@ class LofiPlusApp(App[None]):
         self._mpv.set_event_callback(self._on_mpv_event)
         # Now Playing: poll stream metadata every 5 s
         self.set_interval(5.0, self._poll_now_playing)
-        if not self._mpv.start():
+
+        # Isolated audio route: mpv → null sink → loopback → speakers,
+        # so the visualizer only ever sees lofiplus' own audio.
+        sink = self._router.setup()
+        audio_device = f"pulse/{sink}" if sink else None
+        monitor      = self._router.monitor_name if sink else None
+        if sink is None:
+            self.notify(
+                "Audio sin aislar — el espectro reaccionará a todo el sistema",
+                severity="warning", timeout=5,
+            )
+
+        if not self._mpv.start(audio_device=audio_device):
             self.notify("Could not start mpv — is it installed?", severity="error")
             return
         self._mpv.set_volume(self._vol)
         # start() returns the active mode: "cava" | "loopback" | None (synthetic)
-        mode = self._src.start()
+        mode = self._src.start(monitor=monitor)
         if mode is None:
             self.notify(
                 "Loopback unavailable — spectrum is synthetic. "
@@ -228,6 +243,12 @@ class LofiPlusApp(App[None]):
     def action_blur_dl(self) -> None:
         self.query_one("#dl", DownloadBar).clear()
         self.query_one("#tracks", TrackList).focus()
+
+    def action_cycle_visualizer(self) -> None:
+        spec = self.query_one("#spectrum", SpectrumWidget)
+        new_mode = spec.cycle_mode()
+        self._config.visualizer = new_mode
+        self.notify(f"Visualizador: {new_mode}", timeout=2)
 
     def action_toggle_favorite(self) -> None:
         tl = self.query_one("#tracks", TrackList)
@@ -403,3 +424,5 @@ class LofiPlusApp(App[None]):
         self._dl.stop()
         self._src.stop()
         self._mpv.quit()
+        # After mpv: the sink must outlive the process writing to it
+        self._router.teardown()

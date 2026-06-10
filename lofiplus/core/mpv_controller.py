@@ -66,6 +66,8 @@ class MpvController:
         self._pending: dict[int, threading.Event] = {}
         self._results: dict[int, Any] = {}
         self._start_lock = threading.Lock()  # serialise start / restart
+        # Remembered across restarts so _ensure_alive() rebuilds the same route
+        self._audio_device: str | None = None
         # Optional callback for unsolicited mpv events (e.g. end-file).
         # NOTE: invoked on the reader thread — UI code must re-dispatch
         # via app.call_from_thread.
@@ -81,18 +83,29 @@ class MpvController:
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
-    def start(self) -> bool:
-        """Launch mpv and connect to the IPC channel. Returns True on success."""
+    def start(self, audio_device: str | None = None) -> bool:
+        """Launch mpv and connect to the IPC channel. Returns True on success.
+
+        audio_device: optional mpv device string (e.g. "pulse/lofiplus_123")
+        to route audio into an isolated sink. Remembered for restarts.
+        """
+        if audio_device is not None:
+            self._audio_device = audio_device
+
         args = [
             "mpv",
             "--no-video",
             "--idle=yes",
             f"--input-ipc-server={self._ipc_path}",
-            f"--ao={DEFAULT_AO}",
             "--volume=70",
             "--quiet",
             "--really-quiet",
         ]
+        if self._audio_device:
+            # Isolated route: force the pulse AO at the dedicated sink
+            args += ["--ao=pulse", f"--audio-device={self._audio_device}"]
+        else:
+            args += [f"--ao={DEFAULT_AO}"]
 
         try:
             kwargs: dict[str, Any] = {
